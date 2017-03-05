@@ -1,0 +1,148 @@
+---
+title: "NC Senate Demographics Generate Motion Graphs"
+author: "Mark Connolly"
+date: "`r Sys.Date()`"
+output: html_notebook
+---
+## Make motion graphs
+Generate motion graphs from data and write the results as a series of html files.
+
+Define a collection of district groupings, most of which are grouping of one.  Iterate through the groups and build a motion graph related to race and a second related to ethnicity.  Embed the motion graph in an html document and write the document to a selected file location.  Some of the processing is specific to a Windows environment.
+
+The groupings are somewhat problematic.  The intent is to group districts into a county.  However, districts and county boundaries don't always line up, so the groupings reflect a bit of compromise.  Maybe this data is available geospatially where intersection processing could provide more accurate clustering.  Something to look into.
+
+```{r setup}
+# document definition and construction
+library(knitr)
+library(rmarkdown)
+
+#reading and writing text files for html construction
+library(readr)
+
+# data manipulation
+library(tidyr)
+library(dplyr)
+
+# pipelining commands
+library(magrittr)
+
+# dynamic bubble charts
+require(googleVis)
+```
+
+
+## Bring in the data
+
+The data used are the data from the data preparation processing.  The data from that step were written to a new csv file.
+
+```{r}
+csvfilter <- matrix(c("CSV", "*.csv"), ncol=2)
+
+demosumm <- choose.files(filters = csvfilter,
+                    caption = "Select tidy data file",
+                    multi=FALSE)  %T>%
+           print() %>%
+           read_csv()
+```
+
+## Set up for processing 
+
+```{r}
+work <- data.frame(dist = I(list(1,2,3,4,5,6,7,8,9,10, 11,12,13,
+                                 c(14,15,16,17),  # wake county grouping
+                                 18,19,20,21,22,23,24,25,26,
+                                 c(27,28),  # core guilford
+                                 29,30,
+                                 c(31,32),  # forsyth
+                                 33,34,35,36,
+                                 c(37,38,39,40),  # mecklenburg grouping
+                                 41,42,43,44,45,46,47,48,49,50
+                                )
+                            )
+                  )
+work$race      = I(list(c("white","black","other")))
+work$ethnicity = I(list(c("hispanic","nonhisp")))
+
+toname <- function(x,y,z) {
+  paste(x, paste(unlist(y), collapse = "_"),z,sep="_")
+}
+
+htmlfilter <- matrix(c("HTML", "*.html"), ncol=2)
+template <- choose.files(filters = htmlfilter,
+                    caption = "Select html template for wrapping motion graph",
+                    multi=FALSE)  %T>%
+            print() %>%
+            read_file()
+
+targetdir <- choose.dir(default = getwd(), 
+                        caption = "choose a target to store the generated motion charts")
+if (is.na(targetdir)) {
+  targetdir <- getwd()
+}
+print(paste("motion charts will be written to", targetdir))
+```
+
+## Define the core function that will process a district to make a motion graph
+
+```{r}
+makeamotiongraph <- function(task) {
+  
+  # by ethnicity
+  
+  title <- toname("dist",task$dist,"ethnicity")
+  
+  outfile <- paste(targetdir, "\\", title, ".html", sep="")
+
+  ethnicity <- subset(demosumm,
+                      nc_senate %in% unlist(task$dist) & classification %in% unlist(task$ethnicity))
+
+  amotion <-  ethnicity %>%
+                gvisMotionChart(idvar = "identity", 
+                timevar = "year", 
+                xvar = "median_age", 
+                yvar = "totalpop_class",
+                size = "percent",
+                colorvar="nc_senate",
+                chartid = title)
+
+  template %>% 
+                gsub("{date}", date(), ., fixed=TRUE) %>%
+                gsub("{title}", title, ., fixed=TRUE) %>%
+                gsub("{motion}", paste((unlist(amotion$html$chart)), collapse=""), ., fixed=TRUE) %>%
+                write_file(outfile)
+
+  # by race  
+  
+  title <- toname("dist",task$dist,"race")
+  
+  outfile <- paste(targetdir, "\\", title, ".html", sep="")
+
+  race <- subset(demosumm,
+                      nc_senate %in% unlist(task$dist) & classification %in% unlist(task$race))
+
+  amotion <-  race %>%
+                gvisMotionChart(idvar = "identity", 
+                timevar = "year", 
+                xvar = "median_age", 
+                yvar = "totalpop_class",
+                size = "percent",
+                colorvar="nc_senate",
+                chartid = title)
+
+  template %>% 
+                gsub("{date}", date(), ., fixed=TRUE) %>%
+                gsub("{title}", title, ., fixed=TRUE) %>%
+                gsub("{motion}", paste((unlist(amotion$html$chart)), collapse=""), ., fixed=TRUE) %>%
+                write_file(outfile)
+
+
+}
+```
+## Process the data
+Iterate through the work definitions to produce and persist the motion graphs as shockwave files encapsulated in html documents.
+```{r}
+for(i in 1:nrow(work)) {
+  makeamotiongraph(work[i,])
+}
+
+```

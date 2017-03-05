@@ -1,0 +1,144 @@
+---
+title: "NC Senate Demographics Data Preparation"
+author: "Mark Connolly"
+date: "`r Sys.Date()`"
+output: html_notebook
+---
+## Draft
+
+
+```{r setup}
+# document definition and construction
+library(knitr)
+library(rmarkdown)
+
+#reading and writing files of various types (in this case, csv and text files)
+library(readr)
+
+# data manipulation
+library(tidyr)
+library(dplyr)
+
+# weighted median implementation
+library(matrixStats)
+
+# pipelining commands
+library(magrittr)
+
+# dynamic bubble charts
+require(googleVis)
+```
+## Functions 
+The function ```reshapecolumn``` takes a column, extracts data from the column name, enriches with additional columns, and returns a normalized structure that can be bound to other normalized columns as rows to create a long data frame.
+
+This function will be applied to all of the columns of interest in the source data.
+
+```{r}
+reshapecolumn <- function(colname) {
+  
+  parts <- colname %>% 
+           strsplit("[_]") %>% 
+           unlist()
+  
+  # divisor column to calculate percentage
+  divisorcol <- parts %>%
+                (function(x) (paste("totalpop",x[2],x[3],sep="_")))
+  
+  # total population for the year will be used for plotting
+  totalpop_year <- paste("totalpop",parts[3],sep="_")
+  
+  # extract data from the column names
+  colsfromname <- data.frame("classification" = as.character(parts[1]),
+                             "agerange" = as.character(parts[2]),
+                             "year" = as.integer(parts[3]))
+
+  # build the frame 
+  newdataframe <- cbind(rawdemo["nc_senate"], 
+                        colsfromname, 
+                        round(rawdemo[colname] / rawdemo[divisorcol] * 100),
+                        round(rawdemo[colname]))
+  
+  # set the new column names (must precede next step)
+  names(newdataframe)[5] <- "percent"
+  names(newdataframe)[6] <- "count"
+  
+  # add the total population for the nc senate district to the rows 
+  newdataframe <- inner_join(newdataframe, 
+                             rawdemo[,c("nc_senate", totalpop_year)],
+                             by="nc_senate")
+  
+  # set the column name
+  names(newdataframe)[7] <- "totalpop_district_year"
+  
+  newdataframe$totalpop_district_year <- round(newdataframe$totalpop_district_year)
+  
+  return(newdataframe)
+}
+```
+
+## Tidy and enrich the source data
+
+Data is read in from the original source file as the raw data.  The csv has its own structure.  The code in this document is specific to that structure.
+
+```{r}
+
+csvfilter <- matrix(c("CSV", "*.csv"), ncol=2)
+
+rawdemo <- choose.files(filters = csvfilter,
+                    caption = "Select demographics source file",
+                    multi=FALSE)  %T>%
+           print() %>%
+           read.csv()
+
+```
+
+
+The columns of interest (those with classified demographic data) are identified by a common name pattern. The identified column names are captured in the vector ```cohorts```.  The ```reshapecolumn``` function is applied to each element of the vector, with each returned data frame bound as rows to the next.  This process transforms the wide structure to a long structure, with enrichment by the function.
+
+```{r}
+cohorts <- names(rawdemo)[grep("(hisp|white|black|other).*_age",
+                               (names(rawdemo)))]
+
+demolong <- 
+  cohorts %>%  # gets all the demo data column names 
+                          # (leaves out nc_senate, the first column)
+  lapply(FUN=reshapecolumn) %>%  # feeds each name into the function
+                                   # and builds a list of tables for each 
+                                   # named column
+  do.call('rbind', .)
+```
+
+The age column values identify an age range for the age grouping.  The values are mapped to an age midpoint integer for the group.  The values are joined to the rows so the values can be used for weighted means.
+
+```{r}
+agemeans <- data.frame(agerange  = unique(demolong$agerange),
+                       midpoint_age = seq(from=2, by = 5,length.out = 18))
+
+demolong <- inner_join(demolong, agemeans, by="agerange")
+```
+
+The data is restructured again to group and summarize.  The summarization defines weighted means for age and population percentage.
+
+```{r}
+demosumm <- demolong %>% 
+  group_by(year, nc_senate, classification, totalpop_district_year) %>%
+  summarise(mean_age = round(weighted.mean(midpoint_age,count)),
+            median_age = round(weightedMedian(midpoint_age,count)),
+            totalpop_class = sum(count)
+            )
+
+demosumm$percent <- round(demosumm$totalpop_class / demosumm$totalpop_district_year * 100)
+demosumm$identity <- paste("dist", demosumm$nc_senate, demosumm$classification, sep = "_")
+
+
+# write the data for later processing
+targetdir <- choose.dir(default = getwd(), 
+                        caption = "choose a target to store the reshaped data")
+if (is.na(targetdir)) {
+  targetdir <- getwd()
+}
+outfilename <- paste(targetdir, "\\demosumm.csv", sep="")
+print(paste("reshaped data will be written to", outfilename))
+
+write_csv(demosumm, path = outfilename)
+```
